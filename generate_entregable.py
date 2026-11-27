@@ -110,7 +110,7 @@ def main():
     info = [
         ("Estudiante:", "Diego Magallanes Linares"),
         ("Repositorio base:", "https://github.com/Hellscythe25/dae-s13-carrito-con-ia"),
-        ("Repositorio de entrega:", "https://github.com/DiegoMagallanes11/tienda-online-api.git (carpeta lab13-extra)"),
+        ("Repositorio de entrega:", "https://github.com/DiegoMagallanes11/dae-s13-carrito-con-ia"),
         ("Fecha:", "2026"),
     ]
     for k, v in info:
