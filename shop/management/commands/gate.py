@@ -19,7 +19,7 @@ def replay_audit(mode, paths):
     """Run audit_cart --replay --json with the fixed catalog for one mode; None if it cannot run."""
     env = {**os.environ, "SHOP_MODE": mode}
     cmd = [sys.executable, "manage.py", "audit_cart", *paths, "--replay", "--json", "--catalogo-fijo"]
-    proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8")
+    proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         return None
     try:

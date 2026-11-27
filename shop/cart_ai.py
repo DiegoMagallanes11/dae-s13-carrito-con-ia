@@ -1,21 +1,18 @@
-"""Shopping cart written by an AI assistant (version under review)."""
+"""Shopping cart written by an AI assistant (reviewed and corrected)."""
 from decimal import Decimal
 
 from shop.domain import (
     COUPONS,
+    IGV_RATE,
     CartError,
     InvalidCoupon,
     InvalidQuantity,
     Line,
     OutOfStock,
     UnknownProduct,
+    fmt,
+    money,
 )
-
-IGV = 0.18
-
-
-def _money(value):
-    return Decimal(str(round(value, 2)))
 
 
 def _check_qty(qty):
@@ -27,50 +24,48 @@ class Cart:
     def __init__(self, catalog):
         self._catalog = catalog
         self._qty = {}
-        self._prices = {}
-        self._coupons = []
+        self._coupon = None
 
     def to_state(self):
-        return {"qty": dict(self._qty), "prices": {k: str(v) for k, v in self._prices.items()},
-                "coupons": list(self._coupons)}
+        return {"qty": dict(self._qty), "coupon": self._coupon}
 
     @classmethod
     def from_state(cls, catalog, state):
         cart = cls(catalog)
         cart._qty = {sku: int(q) for sku, q in state.get("qty", {}).items() if sku in catalog}
-        cart._prices = {k: Decimal(v) for k, v in state.get("prices", {}).items() if k in cart._qty}
-        cart._coupons = list(state.get("coupons", []))
+        cart._coupon = state.get("coupon")
         return cart
 
     def add(self, sku, qty=1, price=None):
+        # price is accepted for backward compatibility but NEVER used: catalog is the source.
         _check_qty(qty)
         product = self._catalog.get(sku)
         if product is None:
             raise UnknownProduct(f"No existe el producto {sku!r}")
-        if qty > product.stock:
-            raise OutOfStock(f"{sku}: pides {qty} y quedan {product.stock}")
-        self._qty[sku] = self._qty.get(sku, 0) + qty
-        self._prices[sku] = Decimal(str(price)) if price is not None else product.price
+        current = self._qty.get(sku, 0)
+        if current + qty > product.stock:
+            raise OutOfStock(f"{sku}: pides {current + qty} y quedan {product.stock}")
+        self._qty[sku] = current + qty
 
     def remove(self, sku, qty=None):
         if sku not in self._qty:
             raise UnknownProduct(f"{sku!r} no está en el carrito")
         if qty is None:
             del self._qty[sku]
-            del self._prices[sku]
             return
         _check_qty(qty)
-        self._qty[sku] -= qty
-        if self._qty[sku] == 0:
+        remaining = self._qty[sku] - qty
+        if remaining <= 0:
             del self._qty[sku]
-            del self._prices[sku]
+        else:
+            self._qty[sku] = remaining
 
     def qty_of(self, sku):
         return self._qty.get(sku, 0)
 
     def lines(self):
         return [
-            Line(sku, self._catalog[sku].name, self._prices[sku], qty)
+            Line(sku, self._catalog[sku].name, self._catalog[sku].price, qty)
             for sku, qty in self._qty.items()
         ]
 
@@ -78,62 +73,64 @@ class Cart:
         code = (code or "").strip().upper()
         if code not in COUPONS:
             raise InvalidCoupon(f"Cupón desconocido: {code!r}")
-        self._coupons.append(code)
-
-    def _subtotal(self):
-        return sum(float(l.unit_price) * l.qty for l in self.lines())
-
-    def _discount(self):
-        subtotal = self._subtotal()
-        total_discount = 0.0
-        for code in self._coupons:
-            kind, amount = COUPONS[code]
-            if kind == "percent":
-                total_discount += subtotal * float(amount) / 100
-            else:
-                total_discount += min(float(amount), subtotal)
-        return total_discount
+        self._coupon = code  # one coupon per cart: replace
 
     def subtotal(self):
-        return _money(self._subtotal())
+        total = sum((line.total for line in self.lines()), Decimal("0"))
+        return money(total)
 
     def discount(self):
-        return _money(self._discount())
+        if self._coupon is None:
+            return Decimal("0.00")
+        kind, amount = COUPONS[self._coupon]
+        subtotal = self.subtotal()
+        if kind == "percent":
+            return money(subtotal * amount / Decimal("100"))
+        return min(amount, subtotal)
 
     def igv(self):
-        return _money((self._subtotal() - self._discount()) * IGV)
+        base = self.subtotal() - self.discount()
+        return money(base * IGV_RATE)
 
     def total(self):
-        base = self._subtotal() - self._discount()
-        return _money(base) + self.igv()
+        base = self.subtotal() - self.discount()
+        return money(base) + self.igv()
 
     def summary(self):
         return {
             "lines": [
-                {"sku": l.sku, "name": l.name, "unit_price": f"{l.unit_price:.2f}", "qty": l.qty,
-                 "line_total": f"{l.total:.2f}"}
+                {
+                    "sku": l.sku,
+                    "name": l.name,
+                    "unit_price": fmt(l.unit_price),
+                    "qty": l.qty,
+                    "line_total": fmt(l.total),
+                }
                 for l in self.lines()
             ],
-            "coupon": self._coupons[-1] if self._coupons else None,
-            "subtotal": f"{self.subtotal():.2f}",
-            "discount": f"{self.discount():.2f}",
-            "igv": f"{self.igv():.2f}",
-            "total": f"{self.total():.2f}",
+            "coupon": self._coupon,
+            "subtotal": fmt(self.subtotal()),
+            "discount": fmt(self.discount()),
+            "igv": fmt(self.igv()),
+            "total": fmt(self.total()),
         }
 
     def checkout(self):
         if not self._qty:
             raise CartError("El carrito está vacío")
+        for sku, qty in self._qty.items():
+            product = self._catalog[sku]
+            if qty > product.stock:
+                raise OutOfStock(f"{sku}: pides {qty} y quedan {product.stock}")
         order = self.summary()
         for sku, qty in self._qty.items():
             self._catalog[sku].stock -= qty
         self._qty = {}
-        self._prices = {}
-        self._coupons = []
+        self._coupon = None
         return order
 
 
 def add_from_payload(cart, payload):
     if not isinstance(payload, dict) or not isinstance(payload.get("sku"), str):
         raise CartError("Falta el campo «sku»")
-    cart.add(payload["sku"], payload.get("qty", 1), payload.get("price"))
+    cart.add(payload["sku"], payload.get("qty", 1))

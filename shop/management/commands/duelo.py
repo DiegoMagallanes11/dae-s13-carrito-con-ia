@@ -13,8 +13,8 @@ MODES = {"team": "tu carrito", "ai": "el carrito de la IA", "solutions": "la sol
 def run_suite(mode, verbose):
     env = {**os.environ, "SHOP_MODE": mode}
     cmd = [sys.executable, "manage.py", "test", "shop", "-v", "2" if verbose else "1"]
-    proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8")
-    out = proc.stdout + proc.stderr
+    proc = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    out = (proc.stdout or "") + (proc.stderr or "")
     ran = re.search(r"Ran (\d+) tests?", out)
     total = int(ran.group(1)) if ran else 0
     # one entry per test, even if a test with subTest fails several times
