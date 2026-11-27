@@ -4,9 +4,9 @@ The rules (money, stock, coupons, checkout) are in README.md and in shop/domain.
 shop/domain.py or the tests. Money is Decimal (never float) and the price always comes from the
 catalog, never from the request.
 """
-from decimal import Decimal  # noqa: F401
+from decimal import Decimal
 
-from shop.domain import (  # noqa: F401  (you will need most of these)
+from shop.domain import (
     COUPONS,
     IGV_RATE,
     CartError,
@@ -18,6 +18,11 @@ from shop.domain import (  # noqa: F401  (you will need most of these)
     fmt,
     money,
 )
+
+
+def _check_qty(qty):
+    if isinstance(qty, bool) or not isinstance(qty, int) or qty < 1:
+        raise InvalidQuantity(f"Invalid quantity: {qty!r}")
 
 
 class Cart:
@@ -39,59 +44,102 @@ class Cart:
 
     # --- lines ---
     def add(self, sku, qty=1):
-        """TODO: qty is an int >= 1 (InvalidQuantity); the sku exists (UnknownProduct);
-        what is already in the cart plus qty must not exceed the stock (OutOfStock, cart unchanged)."""
-        raise NotImplementedError("TODO: add")
+        _check_qty(qty)
+        product = self._catalog.get(sku)
+        if product is None:
+            raise UnknownProduct(f"Unknown product: {sku!r}")
+        current = self._qty.get(sku, 0)
+        if current + qty > product.stock:
+            raise OutOfStock(f"{sku}: requested {current + qty}, stock {product.stock}")
+        self._qty[sku] = current + qty
 
     def remove(self, sku, qty=None):
-        """TODO: qty=None removes the whole line; otherwise subtract qty and drop the line when it
-        reaches zero. A sku that is not in the cart is UnknownProduct. Never leave a negative quantity."""
-        raise NotImplementedError("TODO: remove")
+        if sku not in self._qty:
+            raise UnknownProduct(f"{sku!r} is not in the cart")
+        if qty is None:
+            del self._qty[sku]
+            return
+        _check_qty(qty)
+        remaining = self._qty[sku] - qty
+        if remaining <= 0:
+            del self._qty[sku]
+        else:
+            self._qty[sku] = remaining
 
     def qty_of(self, sku):
         return self._qty.get(sku, 0)
 
     def lines(self):
-        """TODO: one Line(sku, name, unit_price, qty) per sku, in insertion order, price from the catalog."""
-        raise NotImplementedError("TODO: lines")
+        result = []
+        for sku, qty in self._qty.items():
+            product = self._catalog[sku]
+            result.append(Line(sku, product.name, product.price, qty))
+        return result
 
     # --- coupon and totals ---
     def apply_coupon(self, code):
-        """TODO: code without spaces and in upper case; unknown -> InvalidCoupon. One coupon per cart:
-        applying again (the same or another) REPLACES it."""
-        raise NotImplementedError("TODO: apply_coupon")
+        code = (code or "").strip().upper()
+        if code not in COUPONS:
+            raise InvalidCoupon(f"Unknown coupon: {code!r}")
+        self._coupon = code
 
     def subtotal(self):
-        """TODO: sum of price * qty, rounded to cents (Decimal)."""
-        raise NotImplementedError("TODO: subtotal")
+        total = sum((line.total for line in self.lines()), Decimal("0"))
+        return money(total)
 
     def discount(self):
-        """TODO: percent coupon = subtotal * pct / 100 rounded half up; fixed coupon = the amount, but
-        never more than the subtotal; no coupon = Decimal('0.00')."""
-        raise NotImplementedError("TODO: discount")
+        if self._coupon is None:
+            return Decimal("0.00")
+        kind, amount = COUPONS[self._coupon]
+        subtotal = self.subtotal()
+        if kind == "percent":
+            return money(subtotal * amount / Decimal("100"))
+        return min(amount, subtotal)
 
     def igv(self):
-        """TODO: 18 % of (subtotal - discount), rounded half up."""
-        raise NotImplementedError("TODO: igv")
+        base = self.subtotal() - self.discount()
+        return money(base * IGV_RATE)
 
     def total(self):
-        """TODO: (subtotal - discount) + igv."""
-        raise NotImplementedError("TODO: total")
+        base = self.subtotal() - self.discount()
+        return money(base) + self.igv()
 
     def summary(self):
-        """TODO: the dict the API returns. Keys: lines (list of dicts with sku, name, unit_price,
-        qty, line_total as 2-decimal strings), coupon, subtotal, discount, igv, total (strings via fmt)."""
-        raise NotImplementedError("TODO: summary")
+        return {
+            "lines": [
+                {
+                    "sku": line.sku,
+                    "name": line.name,
+                    "unit_price": fmt(line.unit_price),
+                    "qty": line.qty,
+                    "line_total": fmt(line.total),
+                }
+                for line in self.lines()
+            ],
+            "coupon": self._coupon,
+            "subtotal": fmt(self.subtotal()),
+            "discount": fmt(self.discount()),
+            "igv": fmt(self.igv()),
+            "total": fmt(self.total()),
+        }
 
     # --- checkout ---
     def checkout(self):
-        """TODO: empty cart -> CartError; stock is checked AGAIN (OutOfStock); on success the catalog stock
-        goes down by what was bought, the cart is emptied and the summary of the order is returned."""
-        raise NotImplementedError("TODO: checkout")
+        if not self._qty:
+            raise CartError("Cart is empty")
+        for sku, qty in self._qty.items():
+            product = self._catalog[sku]
+            if qty > product.stock:
+                raise OutOfStock(f"{sku}: requested {qty}, stock {product.stock}")
+        order = self.summary()
+        for sku, qty in self._qty.items():
+            self._catalog[sku].stock -= qty
+        self._qty = {}
+        self._coupon = None
+        return order
 
 
 def add_from_payload(cart, payload):
-    """TODO: translate the JSON body of POST /api/cart/items/ ({"sku": ..., "qty": ...}) into a cart.add
-    call. The body is untrusted: if it is not a dict with a string «sku», raise CartError. The price is
-    NOT part of the contract: the catalog is the only source of prices."""
-    raise NotImplementedError("TODO: add_from_payload")
+    if not isinstance(payload, dict) or not isinstance(payload.get("sku"), str):
+        raise CartError("Missing or invalid field: sku")
+    cart.add(payload["sku"], payload.get("qty", 1))
